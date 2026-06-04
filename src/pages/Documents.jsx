@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { firebase } from '@/api/firebaseClient';
+import { DOCUMENT_STATUSES, firebase, isAiDisabledResponse, storage } from '@/api/firebaseClient';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { getDownloadURL, ref as storageRef } from 'firebase/storage';
 import { useCompany } from '@/lib/companyContext';
 import { useAuth } from '@/lib/AuthContext';
 import PageHeader from '@/components/shared/PageHeader';
@@ -17,13 +18,30 @@ import ReportGenerator from '@/components/reports/ReportGenerator';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const statusColors = {
-  pending: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
-  processing: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
-  analyzed: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-  error: 'bg-red-500/10 text-red-400 border-red-500/20',
+  [DOCUMENT_STATUSES.UPLOADED]: 'bg-slate-500/10 text-slate-300 border-slate-500/20',
+  [DOCUMENT_STATUSES.PENDING]: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
+  [DOCUMENT_STATUSES.PROCESSING]: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+  [DOCUMENT_STATUSES.ANALYZED]: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+  [DOCUMENT_STATUSES.ERROR]: 'bg-red-500/10 text-red-400 border-red-500/20',
+  [DOCUMENT_STATUSES.ARCHIVED]: 'bg-muted text-muted-foreground border-border',
+  [DOCUMENT_STATUSES.AI_DISABLED]: 'bg-amber-500/10 text-amber-300 border-amber-500/20',
 };
 
-const statusLabels = { pending: 'Pendiente', processing: 'Procesando', analyzed: 'Analizado', error: 'Error' };
+const statusLabels = {
+  [DOCUMENT_STATUSES.UPLOADED]: 'Subido',
+  [DOCUMENT_STATUSES.PENDING]: 'Pendiente',
+  [DOCUMENT_STATUSES.PROCESSING]: 'Procesando',
+  [DOCUMENT_STATUSES.ANALYZED]: 'Analizado',
+  [DOCUMENT_STATUSES.ERROR]: 'Error',
+  [DOCUMENT_STATUSES.ARCHIVED]: 'Archivado',
+  [DOCUMENT_STATUSES.AI_DISABLED]: 'IA no configurada',
+};
+
+const analyzableStatuses = new Set([
+  DOCUMENT_STATUSES.UPLOADED,
+  DOCUMENT_STATUSES.PENDING,
+  DOCUMENT_STATUSES.AI_DISABLED,
+]);
 
 const docTypeLabels = {
   factura: 'Factura', nota_credito: 'Nota de Crédito', recibo: 'Recibo', contrato: 'Contrato',
@@ -94,7 +112,7 @@ export default function Documents() {
         contentType,
         fileSize,
         fileType,
-        status: 'uploaded',
+        status: DOCUMENT_STATUSES.PENDING,
       });
 
       await logAction({
@@ -121,11 +139,38 @@ export default function Documents() {
     }
   };
 
+  const handleOpenDocument = async (doc) => {
+    if (!doc?.storagePath) {
+      toast({
+        title: 'Documento sin archivo',
+        description: 'No se encontró la ruta segura del archivo en Storage.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      const fileRef = storageRef(storage, doc.storagePath);
+      const accessUrl = await getDownloadURL(fileRef);
+      window.open(accessUrl, '_blank', 'noopener,noreferrer');
+    } catch (error) {
+      toast({
+        title: 'No se pudo abrir el documento',
+        description: getErrorMessage(error, 'Verifica tus permisos de Firebase Storage y vuelve a intentar.'),
+        variant: 'destructive',
+      });
+    }
+  };
+
   const handleAnalyze = async (doc) => {
     setAnalyzing(doc.id);
 
     try {
-      await firebase.entities.Document.update(doc.id, { status: 'processing' });
+      await firebase.entities.Document.update(doc.id, {
+        status: DOCUMENT_STATUSES.PROCESSING,
+        aiDisabled: false,
+        errorMessage: null,
+      });
       queryClient.invalidateQueries({ queryKey: ['documents'] });
 
       const result = await firebase.integrations.Core.InvokeLLM({
@@ -161,9 +206,26 @@ export default function Documents() {
         }
       });
 
+      if (isAiDisabledResponse(result)) {
+        const message = result?.message || result?.summary || 'IA no configurada. Configura un backend seguro para analizar documentos.';
+
+        await firebase.entities.Document.update(doc.id, {
+          status: result?.documentStatus || DOCUMENT_STATUSES.AI_DISABLED,
+          aiDisabled: true,
+          ai_summary: message,
+          errorMessage: message,
+        });
+
+        queryClient.invalidateQueries({ queryKey: ['documents'] });
+        toast({ title: 'IA no configurada', description: message });
+        return;
+      }
+
       await firebase.entities.Document.update(doc.id, {
         ...result,
-        status: 'analyzed',
+        status: DOCUMENT_STATUSES.ANALYZED,
+        aiDisabled: false,
+        errorMessage: null,
       });
 
       await logAction({
@@ -180,7 +242,7 @@ export default function Documents() {
       toast({ title: 'Análisis completado', description: 'El documento ha sido procesado con IA.' });
     } catch (error) {
       await firebase.entities.Document.update(doc.id, {
-        status: 'error',
+        status: DOCUMENT_STATUSES.ERROR,
         errorMessage: getErrorMessage(error, 'No se pudo analizar el documento.'),
       });
       queryClient.invalidateQueries({ queryKey: ['documents'] });
@@ -280,7 +342,7 @@ export default function Documents() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  {doc.status === 'pending' && (
+                  {analyzableStatuses.has(doc.status) && (
                     <Button
                       size="sm"
                       variant="outline"
@@ -354,9 +416,15 @@ export default function Documents() {
                 </div>
               )}
               {selectedDoc.storagePath && (
-                <a href={selectedDoc.storagePath} target="_blank" rel="noopener noreferrer" className="inline-block text-sm text-primary hover:underline">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleOpenDocument(selectedDoc)}
+                  className="border-primary/30 text-primary hover:bg-primary/10"
+                >
                   Ver archivo original →
-                </a>
+                </Button>
               )}
             </div>
           )}
