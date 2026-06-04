@@ -1,0 +1,81 @@
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import firebase from '@/api/firebaseClient';
+import { useAuth } from '@/lib/AuthContext';
+
+const SubscriptionContext = createContext(null);
+
+export const PLAN_CONFIG = {
+  basic:      { label: 'Básico',     price: 0,    predictionLimit: 5,  aiAccess: false, color: 'text-muted-foreground', order: 0 },
+  pro:        { label: 'Pro',        price: 799,  predictionLimit: 50, aiAccess: true,  color: 'text-blue-400',         order: 1 },
+  enterprise: { label: 'Enterprise', price: 1999, predictionLimit: Infinity, aiAccess: true, color: 'text-amber-400',  order: 2 },
+};
+
+export function SubscriptionProvider({ children }) {
+  const { user } = useAuth();
+  const [subscription, setSubscription] = useState(null);
+  const [predictionCount, setPredictionCount] = useState(0);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user?.email) { setLoading(false); return; }
+    loadSubscription();
+  }, [user?.email]);
+
+  const loadSubscription = async () => {
+    setLoading(true);
+    try {
+      const [subs, logs] = await Promise.all([
+        firebase.entities.Subscription.filter({ userEmail: user.email, status: 'active' }),
+        firebase.entities.PredictionLog.filter({ userEmail: user.email }).catch(() => []),
+      ]);
+      setSubscription(subs[0] || null);
+      const thisMonth = new Date().toISOString().slice(0, 7);
+      const monthLogs = logs.filter(l => l.fecha_generacion?.startsWith(thisMonth));
+      setPredictionCount(monthLogs.length);
+    } catch (error) {
+      console.error('Error loading subscription:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const plan = subscription?.plan || 'basic';
+  const planCfg = PLAN_CONFIG[plan] || PLAN_CONFIG.basic;
+
+  const canUsePredictions = planCfg.predictionLimit === Infinity || predictionCount < planCfg.predictionLimit;
+  const canAccessAI = planCfg.aiAccess;
+  const predictionsRemaining = planCfg.predictionLimit === Infinity ? '∞' : Math.max(0, planCfg.predictionLimit - predictionCount);
+  const isAtLimit = planCfg.predictionLimit !== Infinity && predictionCount >= planCfg.predictionLimit;
+
+  const logPrediction = async (companyId, tipo = 'general', resultado = '') => {
+    if (!canUsePredictions) return false;
+    try {
+      await firebase.entities.PredictionLog.create({
+        companyId: companyId,
+        userEmail: user?.email || '',
+        fecha_generacion: new Date().toISOString(),
+        tipo_prediccion: tipo,
+        resultado_ia: resultado.slice(0, 500),
+        plan_al_momento: plan,
+      });
+      setPredictionCount(c => c + 1);
+      return true;
+    } catch (error) {
+      console.error('Error logging prediction:', error);
+      return false;
+    }
+  };
+
+  return (
+    <SubscriptionContext.Provider value={{
+      subscription, plan, planCfg, loading,
+      canUsePredictions, canAccessAI,
+      predictionsRemaining, predictionCount, isAtLimit,
+      logPrediction, reload: loadSubscription,
+    }}>
+      {children}
+    </SubscriptionContext.Provider>
+  );
+}
+
+export const useSubscription = () => useContext(SubscriptionContext);

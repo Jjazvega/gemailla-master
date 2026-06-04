@@ -1,0 +1,62 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function currentUid() {
+      return request.auth.uid;
+    }
+
+    function membershipId(companyId) {
+      return companyId + '_' + currentUid();
+    }
+
+    function companyExists(companyId) {
+      return firestore.exists(/databases/(default)/documents/companies/$(companyId));
+    }
+
+    function isCompanyOwner(companyId) {
+      return signedIn()
+        && companyExists(companyId)
+        && firestore.get(/databases/(default)/documents/companies/$(companyId)).data.ownerUid == currentUid();
+    }
+
+    function hasActiveMembership(companyId) {
+      let memberId = membershipId(companyId);
+      return signedIn()
+        && firestore.exists(/databases/(default)/documents/companyMembers/$(memberId))
+        && firestore.get(/databases/(default)/documents/companyMembers/$(memberId)).data.status == 'active';
+    }
+
+    function memberRole(companyId) {
+      let memberId = membershipId(companyId);
+      return firestore.get(/databases/(default)/documents/companyMembers/$(memberId)).data.role;
+    }
+
+    function canReadCompany(companyId) {
+      return isCompanyOwner(companyId) || hasActiveMembership(companyId);
+    }
+
+    function canWriteCompany(companyId) {
+      return isCompanyOwner(companyId)
+        || (hasActiveMembership(companyId) && memberRole(companyId) in ['owner', 'director', 'admin', 'editor']);
+    }
+
+    function validDocumentFile() {
+      return request.resource.size <= 15 * 1024 * 1024
+        && (
+          request.resource.contentType == 'application/pdf'
+          || request.resource.contentType == 'text/xml'
+          || request.resource.contentType == 'application/xml'
+        );
+    }
+
+    match /companies/{companyId}/documents/{documentId}/{fileName} {
+      allow read: if canReadCompany(companyId);
+      allow create, update: if canWriteCompany(companyId) && validDocumentFile();
+      allow delete: if false;
+    }
+  }
+}
