@@ -2,7 +2,7 @@ import { auth, db } from '@/firebase';
 export { default as app, auth, db, storage } from '@/firebase';
 import { DOCUMENT_STATUSES, AI_DISABLED_RESPONSE_STATUSES } from '@/features/documents/constants/documentStatuses';
 import { ENTITY_COLLECTIONS } from '@/infrastructure/firebase/repositories/entityCollections';
-import { normalizeData, normalizeFilters, normalizeKey } from '@/infrastructure/firebase/repositories/normalization';
+import { normalizeData } from '@/infrastructure/firebase/repositories/normalization';
 import { createAuditMutationMiddleware } from '@/infrastructure/firebase/mutations/auditMutationMiddleware';
 import { createRepository } from '@/infrastructure/firebase/repositories/createRepository';
 import { getDocumentAccessUrl, uploadFile } from '@/infrastructure/firebase/storage/documentStorage';
@@ -13,6 +13,7 @@ import {
   doc,
   getDoc,
   onSnapshot,
+  runTransaction,
 } from 'firebase/firestore';
 export function isAiDisabledResponse(response = {}) {
   if (!response || typeof response !== 'object') return false;
@@ -38,14 +39,6 @@ function getCurrentUser() {
 function getCurrentUserUid() {
   const user = getCurrentUser();
   return user?.uid || user?.id || null;
-}
-
-function isArchivedRecord(record) {
-  return record?.status === DOCUMENT_STATUSES.ARCHIVED || record?.status === 'archived';
-}
-
-function keepVisibleRecords(records, includeArchived = false) {
-  return includeArchived ? records : records.filter((item) => !isArchivedRecord(item));
 }
 
 const mutations = createAuditMutationMiddleware({ getCurrentUserUid, nowIso });
@@ -152,6 +145,88 @@ const connectors = {
   disconnectAppUser: async () => ({ success: true, disabled: true }),
 };
 
+
+async function syncUserProfile(profile = {}) {
+  const user = getCurrentUser();
+  const userUid = profile.uid || profile.id || getCurrentUserUid();
+  if (!userUid) throw new Error('No se puede sincronizar el perfil sin UID.');
+
+  const payload = normalizeData({
+    ...profile,
+    uid: userUid,
+    email: profile.email || user?.email || '',
+    fullName: profile.fullName || profile.displayName || user?.displayName || user?.email || '',
+    status: profile.status || 'active',
+  });
+  delete payload.id;
+
+  const dataWithAudit = mutations.withCreateAuditFields(payload);
+  const userRef = doc(db, 'users', userUid);
+
+  await runTransaction(db, async (transaction) => {
+    transaction.set(userRef, dataWithAudit, { merge: true });
+  });
+
+  return { id: userUid, ...dataWithAudit, uid: userUid };
+}
+
+async function createCompanyWithInitialOwner(companyData = {}, membershipData = {}) {
+  const user = getCurrentUser();
+  const userUid = membershipData.userUid || companyData.ownerUid || getCurrentUserUid();
+  if (!userUid) throw new Error('No se puede crear la empresa sin UID de propietario.');
+
+  const companyRef = doc(collection(db, 'companies'));
+  const membershipRef = doc(db, 'companyMembers', `${companyRef.id}_${userUid}`);
+
+  const companyPayload = mutations.withCreateAuditFields(normalizeData({
+    ...companyData,
+    ownerUid: userUid,
+    status: companyData.status || 'active',
+  }));
+
+  const membershipPayload = mutations.withCreateAuditFields(normalizeData({
+    ...membershipData,
+    companyId: companyRef.id,
+    userUid,
+    userEmail: membershipData.userEmail || user?.email || '',
+    userName: membershipData.userName || user?.displayName || user?.email || '',
+    role: membershipData.role || 'director',
+    status: membershipData.status || 'active',
+  }));
+
+  await runTransaction(db, async (transaction) => {
+    transaction.set(companyRef, companyPayload);
+    transaction.set(membershipRef, membershipPayload);
+  });
+
+  return {
+    id: companyRef.id,
+    ...companyPayload,
+    initialOwnerMembership: { id: membershipRef.id, ...membershipPayload },
+  };
+}
+
+function buildEntities() {
+  const entities = Object.fromEntries(
+    Object.entries(ENTITY_COLLECTIONS).map(([entityName, collectionName]) => [
+      entityName,
+      createRepository(collectionName),
+    ]),
+  );
+
+  entities.User = {
+    ...entities.User,
+    syncUserProfile,
+  };
+
+  entities.Company = {
+    ...entities.Company,
+    createCompanyWithInitialOwner,
+  };
+
+  return entities;
+}
+
 const agents = {
   createConversation: async ({ metadata = {}, agent_name: agentName = 'assistant' } = {}) => {
     const payload = withCreateDefaults({
@@ -197,24 +272,7 @@ const agents = {
 };
 
 export const firebase = {
-  entities: Object.fromEntries(
-    Object.entries(ENTITY_COLLECTIONS).map(([entityName, collectionName]) => [
-      entityName,
-      createRepository({
-        db,
-        entityName,
-        collectionName,
-        getCurrentUser,
-        getCurrentUserUid,
-        isArchivedRecord,
-        keepVisibleRecords,
-        normalizeData,
-        normalizeFilters,
-        normalizeKey,
-        nowIso,
-      }),
-    ]),
-  ),
+  entities: buildEntities(),
   integrations: {
     Core: {
       InvokeLLM: invokeLLM,
