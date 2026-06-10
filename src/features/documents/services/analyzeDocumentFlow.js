@@ -8,6 +8,18 @@ function getErrorMessage(error, fallback) {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
+function normalizeAiAnalysisResult(result) {
+  if (result?.response && typeof result.response === 'string') {
+    try {
+      return JSON.parse(result.response);
+    } catch {
+      return { ai_summary: result.response };
+    }
+  }
+
+  return result;
+}
+
 export async function analyzeDocumentFlow({ doc, company, user }) {
   if (!doc?.id) throw new Error('Documento inválido.');
 
@@ -32,6 +44,8 @@ export async function analyzeDocumentFlow({ doc, company, user }) {
         El archivo está en: ${doc.storagePath}
         Nombre: ${doc.title}`,
       storagePaths: [doc.storagePath],
+      companyId: company?.id || doc.companyId,
+      documentId: doc.id,
       response_json_schema: {
         type: 'object',
         properties: {
@@ -64,8 +78,10 @@ export async function analyzeDocumentFlow({ doc, company, user }) {
       return { status: 'ai_disabled', message };
     }
 
+    const normalizedResult = normalizeAiAnalysisResult(result);
+
     await firebase.entities.Document.update(doc.id, {
-      ...result,
+      ...normalizedResult,
       status: DOCUMENT_STATUSES.ANALYZED,
       aiDisabled: false,
       errorMessage: null,
@@ -81,7 +97,7 @@ export async function analyzeDocumentFlow({ doc, company, user }) {
       details: `Analizado: ${doc.title}`,
     });
 
-    return { status: 'analyzed', result };
+    return { status: 'analyzed', result: normalizedResult };
   } catch (error) {
     const message = getErrorMessage(error, 'No se pudo analizar el documento.');
     await firebase.entities.Document.update(doc.id, {

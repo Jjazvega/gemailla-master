@@ -79,7 +79,7 @@ El flujo documental está diseñado para evitar archivos huérfanos y URLs públ
 
 No configures claves privadas de OpenAI/LLM en el frontend. Si aparece `VITE_OPENAI_API_KEY`, la app desactiva la IA para evitar exponer secretos.
 
-El repositorio incluye un backend real en `functions/` con Firebase Cloud Functions. La app llama por defecto a `/api/ai`, ruta que Firebase Hosting reescribe a la función `ai`. La función valida un token Firebase Auth, limita el tamaño del prompt y llama a OpenAI desde servidor.
+El repositorio incluye un backend real en `functions/` con Firebase Cloud Functions. La app llama por defecto a `/api/ai`, ruta que Firebase Hosting reescribe a la función `ai`. La función valida un token Firebase Auth, limita el tamaño del prompt y llama a OpenAI desde servidor. Para análisis documental, el mismo endpoint recibe `storagePaths`, `companyId` y `documentId`, valida membresía/propiedad, confirma que la metadata Firestore coincide con Storage y procesa solo PDF/XML de hasta 15 MB sin exponer URLs públicas.
 
 Configuración mínima del backend:
 
@@ -94,9 +94,10 @@ Variables de operación para Functions:
 
 - `OPENAI_MODEL`: modelo a usar; por defecto `gpt-4o-mini`.
 - `ALLOWED_ORIGINS`: lista explícita separada por comas de orígenes HTTPS permitidos para CORS en producción. Es obligatoria cuando el frontend llama a Functions desde navegador; no uses `*`, `null` ni valores dinámicos derivados del request.
+- `VITE_LLM_ENDPOINT`: opcional si no usas la reescritura `/api/ai`; debe apuntar al backend seguro que soporte texto y análisis documental con `storagePaths`, `companyId` y `documentId`.
 - `ALLOW_UNAUTHENTICATED_AI=true`: solo para emuladores/desarrollo local sin sesión Firebase.
 
-Si necesitas otro backend, configura `VITE_LLM_ENDPOINT` apuntando a un endpoint HTTPS propio que acepte `POST { prompt }` y devuelva `{ response }`.
+Si necesitas otro backend, configura `VITE_LLM_ENDPOINT` apuntando a un endpoint HTTPS propio que acepte `POST { prompt }` para texto y `POST { prompt, storagePaths, companyId, documentId }` para documentos, devolviendo `{ response }`.
 
 ## Reglas de seguridad
 

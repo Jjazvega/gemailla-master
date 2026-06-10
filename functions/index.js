@@ -2,6 +2,14 @@ const admin = require('firebase-admin');
 const { onRequest } = require('firebase-functions/v2/https');
 const { defineSecret } = require('firebase-functions/params');
 const { applyCors } = require('./cors');
+const {
+  buildDocumentOpenAIContent,
+  buildJsonSchemaFormat,
+  deleteOpenAIFile,
+  hasDocumentInputs,
+  validateDocumentAnalysisRequest,
+  verifyDocumentAccess,
+} = require('./documentAi');
 
 admin.initializeApp();
 
@@ -68,7 +76,9 @@ function extractOutputText(payload = {}) {
   return chunks.join('\n').trim();
 }
 
-async function callOpenAI({ apiKey, prompt, user }) {
+async function callOpenAI({ apiKey, prompt, user, inputContent, responseJsonSchema }) {
+  const userContent = inputContent || prompt;
+  const textFormat = buildJsonSchemaFormat(responseJsonSchema);
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: {
@@ -84,9 +94,10 @@ async function callOpenAI({ apiKey, prompt, user }) {
         },
         {
           role: 'user',
-          content: prompt,
+          content: userContent,
         },
       ],
+      ...(textFormat ? { text: { format: textFormat } } : {}),
       metadata: {
         firebase_uid: user.uid || 'unknown',
       },
@@ -139,13 +150,44 @@ exports.ai = onRequest({ cors: false, secrets: [openAiApiKey] }, async (req, res
 
     const user = await verifyFirebaseUser(req);
     const prompt = getPrompt(req.body);
-    const answer = await callOpenAI({ apiKey, prompt, user });
+    let inputContent;
+    let uploadedFileIds = [];
 
-    res.status(200).json({
-      response: answer,
-      model: process.env.OPENAI_MODEL || DEFAULT_MODEL,
-      status: 'completed',
-    });
+    if (hasDocumentInputs(req.body)) {
+      const documentRequest = validateDocumentAnalysisRequest(req.body);
+      await verifyDocumentAccess({
+        firestore: admin.firestore(),
+        user,
+        ...documentRequest,
+      });
+
+      const documentInput = await buildDocumentOpenAIContent({
+        apiKey,
+        bucket: admin.storage().bucket(),
+        prompt,
+        storagePaths: documentRequest.storagePaths,
+      });
+      inputContent = documentInput.content;
+      uploadedFileIds = documentInput.uploadedFileIds;
+    }
+
+    try {
+      const answer = await callOpenAI({
+        apiKey,
+        prompt,
+        user,
+        inputContent,
+        responseJsonSchema: req.body.response_json_schema,
+      });
+
+      res.status(200).json({
+        response: answer,
+        model: process.env.OPENAI_MODEL || DEFAULT_MODEL,
+        status: 'completed',
+      });
+    } finally {
+      await Promise.all(uploadedFileIds.map((fileId) => deleteOpenAIFile({ apiKey, fileId })));
+    }
   } catch (error) {
     const status = Number(error.status) || 500;
     res.status(status).json({ error: error.message || 'No se pudo completar la consulta de IA.' });

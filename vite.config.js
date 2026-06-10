@@ -40,6 +40,7 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: false,
     emptyOutDir: true,
+    chunkSizeWarningLimit: 650,
     rollupOptions: {
       output: {
         manualChunks: getVendorChunkName,
