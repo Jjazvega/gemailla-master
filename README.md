@@ -90,10 +90,10 @@ firebase functions:secrets:set OPENAI_API_KEY
 firebase deploy --only functions,hosting
 ```
 
-Variables opcionales para Functions:
+Variables de operación para Functions:
 
 - `OPENAI_MODEL`: modelo a usar; por defecto `gpt-4o-mini`.
-- `ALLOWED_ORIGINS`: lista separada por comas para CORS cuando se llama desde otro origen.
+- `ALLOWED_ORIGINS`: lista explícita separada por comas de orígenes HTTPS permitidos para CORS en producción. Es obligatoria cuando el frontend llama a Functions desde navegador; no uses `*`, `null` ni valores dinámicos derivados del request.
 - `ALLOW_UNAUTHENTICATED_AI=true`: solo para emuladores/desarrollo local sin sesión Firebase.
 
 Si necesitas otro backend, configura `VITE_LLM_ENDPOINT` apuntando a un endpoint HTTPS propio que acepte `POST { prompt }` y devuelva `{ response }`.

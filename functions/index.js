@@ -1,32 +1,13 @@
 const admin = require('firebase-admin');
 const { onRequest } = require('firebase-functions/v2/https');
 const { defineSecret } = require('firebase-functions/params');
+const { applyCors } = require('./cors');
 
 admin.initializeApp();
 
 const openAiApiKey = defineSecret('OPENAI_API_KEY');
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const MAX_PROMPT_LENGTH = 12000;
-
-function getAllowedOrigins() {
-  return (process.env.ALLOWED_ORIGINS || '')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
-}
-
-function applyCors(req, res) {
-  const allowedOrigins = getAllowedOrigins();
-  const requestOrigin = req.get('origin');
-  const allowedOrigin = allowedOrigins.includes(requestOrigin)
-    ? requestOrigin
-    : allowedOrigins[0] || requestOrigin || '*';
-
-  res.set('Access-Control-Allow-Origin', allowedOrigin);
-  res.set('Vary', 'Origin');
-  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
-}
 
 function getBearerToken(req) {
   const authHeader = req.get('authorization') || '';
@@ -131,7 +112,13 @@ async function callOpenAI({ apiKey, prompt, user }) {
 }
 
 exports.ai = onRequest({ cors: false, secrets: [openAiApiKey] }, async (req, res) => {
-  applyCors(req, res);
+  const isCorsAllowed = applyCors(req, res);
+  if (!isCorsAllowed) {
+    res.status(403).json({
+      error: 'Origen CORS no permitido. Configura ALLOWED_ORIGINS con los dominios HTTPS autorizados para producción.',
+    });
+    return;
+  }
 
   if (req.method === 'OPTIONS') {
     res.status(204).send('');
