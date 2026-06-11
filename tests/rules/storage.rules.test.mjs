@@ -6,6 +6,7 @@ import {
   seedCompany,
   storageDelete,
   storageRead,
+  storageUpdate,
   firestoreSet,
   storageUpload,
 } from './rules-test-utils.mjs';
@@ -20,6 +21,7 @@ const otherOwner = { uid: 'other-storage-owner-uid', claims: { email: 'other-sto
 const documentId = 'doc-1';
 const missingDocumentId = 'doc-missing';
 const validPdfPath = `companies/${companyId}/documents/${documentId}/file.pdf`;
+const validXmlPath = `companies/${companyId}/documents/${documentId}/file.xml`;
 const missingDocumentPdfPath = `companies/${companyId}/documents/${missingDocumentId}/file.pdf`;
 const otherCompanyPdfPath = `companies/${otherCompanyId}/documents/doc-1-other-company/file.pdf`;
 
@@ -60,8 +62,15 @@ describe('Cloud Storage security rules', () => {
     await seedStorageAcl();
   });
 
-  it('allows uploads only under companies/{companyId}/documents/{documentId}/{fileName}', async () => {
-    await assertAllowed(storageUpload(validPdfPath, owner), 'owner upload to valid nested document path');
+  it('allows PDF and XML uploads only when a matching Firestore document exists', async () => {
+    await assertAllowed(storageUpload(validPdfPath, owner, {
+      contentType: 'application/pdf',
+      body: '%PDF-1.7 fixture',
+    }), 'owner upload PDF to existing document path');
+    await assertAllowed(storageUpload(validXmlPath, director, {
+      contentType: 'application/xml',
+      body: '<invoice id="fixture" />',
+    }), 'director upload XML to existing document path');
 
     await assertDenied(
       storageUpload(`companies/${companyId}/documents/file.pdf`, owner),
@@ -81,6 +90,30 @@ describe('Cloud Storage security rules', () => {
     );
   });
 
+  it('rejects invalid MIME types and files larger than 15 MB', async () => {
+    await assertDenied(storageUpload(`companies/${companyId}/documents/${documentId}/file.exe`, owner, {
+      contentType: 'application/octet-stream',
+      body: 'not a PDF or XML',
+    }), 'invalid MIME upload');
+
+    await assertDenied(storageUpload(`companies/${companyId}/documents/${documentId}/oversized.pdf`, owner, {
+      contentType: 'application/pdf',
+      body: Buffer.alloc((15 * 1024 * 1024) + 1, 0x61),
+    }), 'oversized PDF upload');
+  });
+
+  it('rejects uploads when the Firestore document is missing or belongs to another company', async () => {
+    await assertDenied(
+      storageUpload(missingDocumentPdfPath, owner),
+      'upload without Firestore document metadata',
+    );
+
+    await assertDenied(
+      storageUpload(`companies/${companyId}/documents/doc-1-other-company/file.pdf`, owner),
+      'upload path company differs from Firestore document company',
+    );
+  });
+
   it('allows reads only with valid company permissions', async () => {
     await assertAllowed(storageUpload(validPdfPath, owner), 'owner fixture upload');
 
@@ -89,9 +122,11 @@ describe('Cloud Storage security rules', () => {
     await assertDenied(storageRead(validPdfPath, outsider), 'outsider read');
   });
 
-  it('blocks physical deletes even for permitted company users', async () => {
-    await assertAllowed(storageUpload(validPdfPath, owner), 'owner fixture upload before delete');
+  it('blocks client updates and physical deletes even for permitted company users', async () => {
+    await assertAllowed(storageUpload(validPdfPath, owner), 'owner fixture upload before update/delete');
 
+    await assertDenied(storageUpdate(validPdfPath, owner), 'owner physical update');
+    await assertDenied(storageUpdate(validPdfPath, director), 'director physical update');
     await assertDenied(storageDelete(validPdfPath, owner), 'owner physical delete');
     await assertDenied(storageDelete(validPdfPath, director), 'director physical delete');
   });
