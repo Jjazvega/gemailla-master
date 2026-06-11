@@ -3,6 +3,7 @@ import {
   assertAllowed,
   assertDenied,
   clearFirestore,
+  clearStorage,
   seedCompany,
   storageDelete,
   storageRead,
@@ -59,6 +60,7 @@ async function seedStorageAcl() {
 describe('Cloud Storage security rules', () => {
   beforeEach(async () => {
     await clearFirestore();
+    await clearStorage();
     await seedStorageAcl();
   });
 
@@ -71,6 +73,10 @@ describe('Cloud Storage security rules', () => {
       contentType: 'application/xml',
       body: '<invoice id="fixture" />',
     }), 'director upload XML to existing document path');
+    await assertAllowed(storageUpload(`companies/${companyId}/documents/${documentId}/file-text.xml`, director, {
+      contentType: 'text/xml',
+      body: '<invoice id="text-xml-fixture" />',
+    }), 'director upload text/xml to existing document path');
 
     await assertDenied(
       storageUpload(`companies/${companyId}/documents/file.pdf`, owner),
@@ -90,11 +96,18 @@ describe('Cloud Storage security rules', () => {
     );
   });
 
-  it('rejects invalid MIME types and files larger than 15 MB', async () => {
+  it('rejects unauthenticated uploads, invalid MIME types and files larger than 15 MB', async () => {
+    await assertDenied(storageUpload(validPdfPath, null), 'anonymous upload');
+
     await assertDenied(storageUpload(`companies/${companyId}/documents/${documentId}/file.exe`, owner, {
       contentType: 'application/octet-stream',
       body: 'not a PDF or XML',
     }), 'invalid MIME upload');
+
+    await assertDenied(storageUpload(`companies/${companyId}/documents/${documentId}/renamed-pdf.txt`, owner, {
+      contentType: 'text/plain',
+      body: '%PDF bytes with an unsafe MIME',
+    }), 'PDF-looking bytes with invalid MIME upload');
 
     await assertDenied(storageUpload(`companies/${companyId}/documents/${documentId}/oversized.pdf`, owner, {
       contentType: 'application/pdf',
@@ -127,8 +140,10 @@ describe('Cloud Storage security rules', () => {
 
     await assertDenied(storageUpdate(validPdfPath, owner), 'owner physical update');
     await assertDenied(storageUpdate(validPdfPath, director), 'director physical update');
+    await assertDenied(storageUpdate(validPdfPath, outsider), 'outsider physical update');
     await assertDenied(storageDelete(validPdfPath, owner), 'owner physical delete');
     await assertDenied(storageDelete(validPdfPath, director), 'director physical delete');
+    await assertDenied(storageDelete(validPdfPath, outsider), 'outsider physical delete');
   });
 
   it('denies access to another company', async () => {
