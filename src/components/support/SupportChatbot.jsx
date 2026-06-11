@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { firebase } from '@/api/firebaseClient';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { companyEntityQueryKey, useCompanyDocuments, useCompanySupportTickets, useCompanyTransactions } from '@/lib/companyEntityQueries';
+import { companyEntityQueryKey, useCompanyData } from '@/lib/companyEntityQueries';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -37,9 +37,9 @@ export default function SupportChatbot({ company }) {
   const [showTickets, setShowTickets] = useState(false);
   const bottomRef = useRef(null);
 
-  const { data: transactions = [] } = useCompanyTransactions(company);
-  const { data: documents = [] } = useCompanyDocuments(company);
-  const { data: tickets = [] } = useCompanySupportTickets(company);
+  const { transactions, documents, supportTickets: tickets } = useCompanyData(company?.id, {
+    queryNames: ['transactions', 'documents', 'supportTickets'],
+  });
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, aiLoading]);
 
