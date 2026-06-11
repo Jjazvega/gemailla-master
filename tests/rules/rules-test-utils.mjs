@@ -161,6 +161,14 @@ export async function storageRead(path, auth) {
   });
 }
 
+export async function storageUpdate(path, auth, { contentType = 'application/pdf', body = 'updated bytes' } = {}) {
+  return fetch(`${storageBase}/${encodeURIComponent(path)}`, {
+    method: 'PATCH',
+    headers: authHeaders(auth, { 'Content-Type': contentType }),
+    body,
+  });
+}
+
 export async function storageDelete(path, auth) {
   return fetch(`${storageBase}/${encodeURIComponent(path)}`, {
     method: 'DELETE',
